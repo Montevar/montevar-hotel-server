@@ -25,10 +25,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ✅ CORS for local frontend
+const allowedOrigins = [
+  'https://montevar-hotel-frontend.vercel.app',
+  'https://montevarhotel.com', // your new custom domain
+];
+
 app.use(cors({
-  origin: '*',
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
+
 
 // ✅ Session config (single instance)
 app.use(session({
