@@ -14,7 +14,7 @@ const createPaystackPayment = async ({ name, email, amount, bookingId, roomId, p
           bookingId,
           roomId,
         },
-        callback_url: 'http://localhost:3000/payment-success',
+        callback_url: process.env.FRONTEND_PROD_URL + '/payment-success'
       },
       {
         headers: {

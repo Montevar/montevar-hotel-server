@@ -111,12 +111,11 @@ const createBooking = async (req, res) => {
       source,
     } = req.body;
 
-    // ✅ Normalize start and end dates
     const normalizedStartDate = new Date(startDate);
     const normalizedEndDate = new Date(endDate);
-    normalizedEndDate.setHours(12, 0, 0, 0); // Set end date to 12:00 noon
+    normalizedEndDate.setHours(12, 0, 0, 0);
 
-    // ✅ First, check if the room is available
+    // ✅ Check if room is available
     const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
     if (!available) {
       return res.status(400).json({
@@ -126,13 +125,32 @@ const createBooking = async (req, res) => {
 
     const amountInKobo = roomPrice * 100;
 
-    // ✅ Then initialize Paystack
+    // ✅ Save booking first (UNPAID status) so we have the ID
+    const newBooking = new Booking({
+      fullName,
+      phone,
+      email,
+      roomId,
+      roomName,
+      roomNumber,
+      roomPrice,
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      isPaid: false,                  // unpaid until verified
+      source: "ONLINE USER",          // correct label for dashboard
+      status: "BOOKED",               // marked as booked
+      paymentStatus: "UNPAID",        // updated later in verifyPayment
+    });
+
+    await newBooking.save(); // must happen before initializing payment
+
+    // ✅ Initialize Paystack with booking ID in metadata
     const paystackRes = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
         email,
         amount: amountInKobo,
-        callback_url: "http://localhost:3000/booking",
+        callback_url: "https://montevarhotel.com/payment-success", // update later if needed
         metadata: {
           fullName,
           phone,
@@ -141,6 +159,7 @@ const createBooking = async (req, res) => {
           roomNumber,
           startDate: normalizedStartDate,
           endDate: normalizedEndDate,
+          bookingId: newBooking._id.toString(), // important!
         },
       },
       {
@@ -153,24 +172,12 @@ const createBooking = async (req, res) => {
 
     const { authorization_url, reference } = paystackRes.data.data;
 
-    // ✅ Save temporary unpaid booking
-    const newBooking = new Booking({
-      fullName,
-      phone,
-      email,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate: normalizedStartDate,
-      endDate: normalizedEndDate,
-      isPaid: false,
-      source: "online",
-      reference,
-    });
-
-    await newBooking.save();
+    // ✅ Save reference for verification
+    newBooking.reference = reference;
+    await newBooking.save(); // update with reference
 
     return res.status(200).json({ authorization_url });
+
   } catch (error) {
     console.error("Error creating booking:", error?.response?.data || error);
     return res.status(500).json({ message: "Booking failed", error });
@@ -333,32 +340,26 @@ const verifyPayment = async (req, res) => {
     );
 
     if (data.status && data.data.status === "success") {
-      const email = data.data.customer.email;
       const meta = data.data.metadata;
 
-      // ✅ Convert string dates from metadata to actual Date objects
-      const booking = await Booking.findOne({
-        email,
-        roomName: meta.roomName,
-        roomNumber: meta.roomNumber,
-        startDate: new Date(meta.startDate),
-        endDate: new Date(meta.endDate),
-        isPaid: false,
-        isCancelled: { $ne: true },
-      });
+      const booking = await Booking.findById(meta.bookingId);
 
-      if (!booking) {
+      if (!booking || booking.isCancelled || booking.isPaid) {
         return res.status(404).json({
           verified: true,
           updated: false,
-          message: "Booking not found to update",
+          message: "Booking not found or already paid/cancelled",
         });
       }
 
-      // ✅ Mark as paid
+      // ✅ Mark booking as fully paid
       booking.isPaid = true;
       booking.paymentMethod = "paystack";
-      booking.source = "online";
+      booking.paymentStatus = "PAID";     // <-- important
+      booking.status = "BOOKED";          // <-- still BOOKED but paid
+      booking.source = "ONLINE USER";     // <-- dashboard expects this value
+      booking.reference = reference;      // just to be safe
+
       await booking.save();
 
       return res.status(200).json({

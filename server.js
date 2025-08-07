@@ -50,11 +50,12 @@ app.use(session({
   store: MongoStore.create({ mongoUrl: process.env.MONGO_URI }),
   cookie: {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: false, // Always false for local
-    maxAge: 1000 * 60 * 30,
+    sameSite: process.env.ENVIRONMENT === 'production' ? 'None' : 'Lax',
+    secure: process.env.ENVIRONMENT === 'production', // true only in prod
+    maxAge: 1000 * 60 * 30, // 30 mins
   },
 }));
+
 
 // ✅ Rate limiter
 app.use(rateLimit({
