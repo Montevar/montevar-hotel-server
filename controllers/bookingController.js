@@ -150,7 +150,7 @@ const createBooking = async (req, res) => {
       {
         email,
         amount: amountInKobo,
-        callback_url: "https://montevarhotel.com/payment-success", // update later if needed
+        callback_url: process.env.PAYSTACK_CALLBACK_URL || "http://localhost:3000/payment-success", // update later if needed
         metadata: {
           fullName,
           phone,
