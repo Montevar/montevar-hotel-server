@@ -91,6 +91,54 @@ const isRoomAvailable = async (roomName, startDate, endDate) => {
 
 
 
+// ✅ POST: Create booking (without payment — online reservation)
+const createBooking = async (req, res) => {
+  try {
+    const {
+      fullName,
+      phone,
+      email,
+      roomName,
+      roomNumber,
+      roomPrice,
+      startDate,
+      endDate,
+    } = req.body;
+
+    const normalizedStartDate = new Date(startDate);
+    const normalizedEndDate = new Date(endDate);
+    normalizedEndDate.setHours(12, 0, 0, 0);
+
+    const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
+    if (!available) {
+      return res.status(400).json({
+        message: "Room is already booked or reserved for those dates.",
+      });
+    }
+
+    const booking = new Booking({
+      fullName,
+      phone,
+      email,
+      roomName,
+      roomNumber,
+      roomPrice,
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      isPaid: false,
+      source: "online",
+    });
+
+    await booking.save();
+
+    res.status(201).json({ message: "Booking created (without payment)", booking });
+  } catch (error) {
+    console.error("❌ Booking creation error:", error);
+    res.status(500).json({ message: "Booking failed", error: error.message });
+  }
+};
+
+
 
 
 
@@ -373,7 +421,8 @@ const clearAllBookings = async (req, res) => {
 
 module.exports = {
   getBookings,
-  initializePayment, // 👈 new
+  createBooking, // 👈 ADD THIS LINE
+  initializePayment,
   verifyPayment,
   createManualBooking,
   cancelBooking,
