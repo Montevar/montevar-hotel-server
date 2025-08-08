@@ -7,22 +7,24 @@ const {
   createManualBooking,
   cancelBooking,
   verifyPayment,
+  initializePayment, // ✅ Add this
   checkAvailability,
   clearAllBookings,
 } = require("../controllers/bookingController");
 
 // ✅ Public Routes (used by frontend)
-router.get('/', getBookings); // Fetch all bookings (consider protecting this in future)
+router.get('/', getBookings); // Fetch all bookings
 router.get('/check', checkAvailability); // Check room availability
 
-router.post('/', createBooking); // Create online booking via Paystack
+router.post('/', createBooking); // Create booking directly (for reserved)
+router.post('/initialize-payment', initializePayment); // ✅ New route for Paystack init
 router.post('/verify-payment', verifyPayment); // Paystack callback verification
 
-// ✅ Admin / Internal Tools (consider protecting these with auth middleware)
+// ✅ Admin / Internal Tools
 router.post('/manual', createManualBooking); // Manual booking (admin)
 router.post('/reserve', createManualBooking); // Reservation via UI
 
 router.patch('/cancel/:id', cancelBooking); // Cancel a booking (admin)
-router.delete('/clear-all', clearAllBookings); // ⚠️ Danger zone: clears ALL bookings!
+router.delete('/clear-all', clearAllBookings); // Danger zone: clears ALL bookings!
 
 module.exports = router;

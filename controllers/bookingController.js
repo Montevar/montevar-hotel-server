@@ -95,7 +95,8 @@ const isRoomAvailable = async (roomName, startDate, endDate) => {
 
 
 // ✅ POST: Create booking with Paystack
-const createBooking = async (req, res) => {
+// ✅ NEW: Initialize payment only — no DB
+const initializePaymentOnly = async (req, res) => {
   try {
     const {
       fullName,
@@ -108,58 +109,28 @@ const createBooking = async (req, res) => {
       amount,
       startDate,
       endDate,
-      source,
     } = req.body;
-
-    const normalizedStartDate = new Date(startDate);
-    const normalizedEndDate = new Date(endDate);
-    normalizedEndDate.setHours(12, 0, 0, 0);
-
-    // ✅ Check if room is available
-    const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
-    if (!available) {
-      return res.status(400).json({
-        message: "This room is already booked or reserved for the selected dates. Please check other rooms.",
-      });
-    }
 
     const amountInKobo = roomPrice * 100;
 
-    // ✅ Save booking first (UNPAID status) so we have the ID
-    const newBooking = new Booking({
-      fullName,
-      phone,
-      email,
-      roomId,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate: normalizedStartDate,
-      endDate: normalizedEndDate,
-      isPaid: false,                  // unpaid until verified
-      source,
-      status: "BOOKED",               // marked as booked
-      paymentStatus: "UNPAID",        // updated later in verifyPayment
-    });
-
-    await newBooking.save(); // must happen before initializing payment
-
-    // ✅ Initialize Paystack with booking ID in metadata
+    // ✅ Just initialize payment — no DB write
     const paystackRes = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
         email,
         amount: amountInKobo,
-        callback_url: process.env.PAYSTACK_CALLBACK_URL || "https://montevar-hotel-frontend.vercel.app/payment-success", // update later if needed
+        callback_url: process.env.PAYSTACK_CALLBACK_URL || "https://montevar-hotel-frontend.vercel.app/paystack", // make sure your frontend uses /paystack
         metadata: {
           fullName,
           phone,
           email,
+          roomId,
           roomName,
           roomNumber,
-          startDate: normalizedStartDate,
-          endDate: normalizedEndDate,
-          bookingId: newBooking._id.toString(), // important!
+          roomPrice,
+          amount,
+          startDate,
+          endDate,
         },
       },
       {
@@ -172,15 +143,10 @@ const createBooking = async (req, res) => {
 
     const { authorization_url, reference } = paystackRes.data.data;
 
-    // ✅ Save reference for verification
-    newBooking.reference = reference;
-    await newBooking.save(); // update with reference
-
-    return res.status(200).json({ authorization_url });
-
+    return res.status(200).json({ authorization_url, reference });
   } catch (error) {
-    console.error("Error creating booking:", error?.response?.data || error);
-    return res.status(500).json({ message: "Booking failed", error });
+    console.error("❌ Payment initialization failed:", error?.response?.data || error);
+    return res.status(500).json({ message: "Failed to initialize payment", error });
   }
 };
 
@@ -324,17 +290,16 @@ const bookings = await Booking.find({
 
 // ✅ POST: Verify Paystack payment (optional if handled frontend)
 
-// ✅ POST: Verify Paystack payment and mark booking as paid
+// ✅ Updated verifyPayment
 const verifyPayment = async (req, res) => {
   try {
     const { reference } = req.body;
 
-    const secretKey = process.env.PAYSTACK_SECRET_KEY;
     const { data } = await axios.get(
       `https://api.paystack.co/transaction/verify/${reference}`,
       {
         headers: {
-          Authorization: `Bearer ${secretKey}`,
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
         },
       }
     );
@@ -342,45 +307,55 @@ const verifyPayment = async (req, res) => {
     if (data.status && data.data.status === "success") {
       const meta = data.data.metadata;
 
-      const booking = await Booking.findById(meta.bookingId);
-
-      if (!booking || booking.isCancelled || booking.isPaid) {
-        return res.status(404).json({
-          verified: true,
-          updated: false,
-          message: "Booking not found or already paid/cancelled",
+      // ✅ Check availability again just in case
+      const available = await isRoomAvailable(meta.roomName, new Date(meta.startDate), new Date(meta.endDate));
+      if (!available) {
+        return res.status(400).json({
+          verified: false,
+          message: "Room is no longer available",
         });
       }
 
-      // ✅ Mark booking as fully paid
-      booking.isPaid = true;
-      booking.paymentMethod = "paystack";
-      booking.paymentStatus = "PAID";     // <-- important
-      booking.status = "BOOKED";          // <-- still BOOKED but paid
-      booking.source = "ONLINE USER";     // <-- dashboard expects this value
-      booking.reference = reference;      // just to be safe
+      // ✅ Create booking now that payment is confirmed
+      const booking = new Booking({
+        fullName: meta.fullName,
+        phone: meta.phone,
+        email: meta.email,
+        roomId: meta.roomId,
+        roomName: meta.roomName,
+        roomNumber: meta.roomNumber,
+        roomPrice: meta.roomPrice,
+        startDate: meta.startDate,
+        endDate: meta.endDate,
+        isPaid: true,
+        source: "ONLINE USER",
+        paymentMethod: "paystack",
+        paymentStatus: "PAID",
+        status: "BOOKED",
+        reference: reference,
+      });
 
       await booking.save();
 
       return res.status(200).json({
         verified: true,
-        updated: true,
-        message: "Payment verified and booking updated",
+        message: "Payment verified and booking created",
       });
     }
 
     return res.status(400).json({
       verified: false,
-      message: "Transaction not successful",
+      message: "Payment not successful",
     });
   } catch (err) {
-    console.error("❌ Error verifying payment:", err?.response?.data || err);
-    res.status(500).json({
-      message: "Internal server error while verifying payment",
+    console.error("❌ Verification error:", err?.response?.data || err);
+    return res.status(500).json({
+      message: "Error verifying payment",
       error: err.message,
     });
   }
 };
+
 
 
 // Clear all bookings permanently
@@ -398,10 +373,11 @@ const clearAllBookings = async (req, res) => {
 
 module.exports = {
   getBookings,
-  createBooking,
+  initializePaymentOnly, // 👈 new
+  verifyPayment,
   createManualBooking,
   cancelBooking,
   checkAvailability,
-  verifyPayment,
-  clearAllBookings, // <-- Make sure this is included
+  clearAllBookings,
 };
+
