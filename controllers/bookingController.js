@@ -137,7 +137,7 @@ const createBooking = async (req, res) => {
       startDate: normalizedStartDate,
       endDate: normalizedEndDate,
       isPaid: false,                  // unpaid until verified
-      source: "ONLINE USER",          // correct label for dashboard
+      source,
       status: "BOOKED",               // marked as booked
       paymentStatus: "UNPAID",        // updated later in verifyPayment
     });
@@ -150,7 +150,7 @@ const createBooking = async (req, res) => {
       {
         email,
         amount: amountInKobo,
-        callback_url: process.env.PAYSTACK_CALLBACK_URL || "http://localhost:3000/payment-success", // update later if needed
+        callback_url: process.env.PAYSTACK_CALLBACK_URL || "https://montevar-hotel-frontend.vercel.app/payment-success", // update later if needed
         metadata: {
           fullName,
           phone,
