@@ -7,7 +7,7 @@ const {
   createManualBooking,
   cancelBooking,
   verifyPayment,
-  initializePayment, // ✅ Add this
+  initializePayment, // ✅ correctly imported
   checkAvailability,
   clearAllBookings,
 } = require("../controllers/bookingController");
@@ -17,7 +17,7 @@ router.get('/', getBookings); // Fetch all bookings
 router.get('/check', checkAvailability); // Check room availability
 
 router.post('/', createBooking); // Create booking directly (for reserved)
-router.post('/initialize-payment', initializePayment); // ✅ New route for Paystack init
+router.post("/initialize-payment", initializePayment); // ✅ use correctly
 router.post('/verify-payment', verifyPayment); // Paystack callback verification
 
 // ✅ Admin / Internal Tools
