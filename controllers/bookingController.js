@@ -162,36 +162,40 @@ const initializePayment = async (req, res) => {
     const amountInKobo = roomPrice * 100;
 
     // ✅ Just initialize payment — no DB write
-    const paystackRes = await axios.post(
-      "https://api.paystack.co/transaction/initialize",
-      {
-        email,
-        amount: amountInKobo,
-        callback_url: `https://montevar-hotel-frontend.vercel.app/booking?reference=${reference}`, // make sure your frontend uses /paystack
-        metadata: {
-          fullName,
-          phone,
-          email,
-          roomId,
-          roomName,
-          roomNumber,
-          roomPrice,
-          amount,
-          startDate,
-          endDate,
-        },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const reference = `MV-${Date.now()}`;
 
-    const { authorization_url, reference } = paystackRes.data.data;
+      const paystackRes = await axios.post(
+  "https://api.paystack.co/transaction/initialize",
+  {
+    email,
+    amount: amountInKobo,
+    callback_url: `https://montevar-hotel-frontend.vercel.app/booking?reference=${reference}`,
+    metadata: {
+      fullName,
+      phone,
+      email,
+      roomId,
+      roomName,
+      roomNumber,
+      roomPrice,
+      amount,
+      startDate,
+      endDate,
+    },
+    reference, // include your generated reference here (optional but good)
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+  }
+);
 
-    return res.status(200).json({ authorization_url, reference });
+const { authorization_url } = paystackRes.data.data;
+
+return res.status(200).json({ authorization_url, reference });
+
   } catch (error) {
     console.error("❌ Payment initialization failed:", error?.response?.data || error);
     return res.status(500).json({ message: "Failed to initialize payment", error });
