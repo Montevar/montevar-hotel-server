@@ -167,7 +167,7 @@ const initializePayment = async (req, res) => {
       {
         email,
         amount: amountInKobo,
-        callback_url: process.env.PAYSTACK_CALLBACK_URL || "https://montevar-hotel-frontend.vercel.app/paystack", // make sure your frontend uses /paystack
+        callback_url: `https://montevar-hotel-frontend.vercel.app/booking?reference=${reference}`, // make sure your frontend uses /paystack
         metadata: {
           fullName,
           phone,
