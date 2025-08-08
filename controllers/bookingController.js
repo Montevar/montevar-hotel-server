@@ -96,7 +96,7 @@ const isRoomAvailable = async (roomName, startDate, endDate) => {
 
 // ✅ POST: Create booking with Paystack
 // ✅ NEW: Initialize payment only — no DB
-const initializePaymentOnly = async (req, res) => {
+const initializePayment = async (req, res) => {
   try {
     const {
       fullName,
@@ -373,7 +373,7 @@ const clearAllBookings = async (req, res) => {
 
 module.exports = {
   getBookings,
-  initializePaymentOnly, // 👈 new
+  initializePayment, // 👈 new
   verifyPayment,
   createManualBooking,
   cancelBooking,
