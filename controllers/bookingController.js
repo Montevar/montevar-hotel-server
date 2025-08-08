@@ -161,6 +161,14 @@ const initializePayment = async (req, res) => {
 
     const amountInKobo = roomPrice * 100;
 
+    const available = await isRoomAvailable(roomName, new Date(startDate), new Date(endDate));
+    if (!available) {
+      return res.status(400).json({ message: "Room not available for selected dates" });
+    }
+
+  
+
+
     // ✅ Just initialize payment — no DB write
     const reference = `MV-${Date.now()}`;
 
@@ -347,6 +355,10 @@ const verifyPayment = async (req, res) => {
   try {
     const { reference } = req.body;
 
+    if (!reference) {
+      return res.status(400).json({ message: "Reference is required" });
+    }
+
     const { data } = await axios.get(
       `https://api.paystack.co/transaction/verify/${reference}`,
       {
@@ -367,6 +379,8 @@ const verifyPayment = async (req, res) => {
           message: "Room is no longer available",
         });
       }
+
+      console.log("Verifying payment with reference:", reference);
 
       // ✅ Create booking now that payment is confirmed
       const booking = new Booking({
@@ -391,6 +405,7 @@ const verifyPayment = async (req, res) => {
 
       return res.status(200).json({
         verified: true,
+        updated: true,     // ADD THIS LINE
         message: "Payment verified and booking created",
       });
     }
