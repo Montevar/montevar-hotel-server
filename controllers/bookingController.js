@@ -189,7 +189,7 @@ const initializePayment = async (req, res) => {
   {
     email,
     amount: amountInKobo,
-    callback_url: `https://montevar-hotel-frontend.vercel.app/booking?reference=${reference}`,
+    callback_url: `https://montevarhotel.com/booking?reference=${reference}`,
     metadata: {
       fullName,
       phone,
