@@ -88,6 +88,11 @@ const isRoomAvailable = async (roomName, startDate, endDate) => {
 };
 
 
+const isStartDateValid = (startDate) => {
+  const now = new Date();
+  const minStart = new Date(now.getTime() + 24 * 60 * 60 * 1000); // now + 24 hours
+  return startDate >= minStart;
+};
 
 
 
@@ -108,6 +113,13 @@ const createBooking = async (req, res) => {
     const normalizedStartDate = new Date(startDate);
     const normalizedEndDate = new Date(endDate);
     normalizedEndDate.setHours(12, 0, 0, 0);
+
+    // Check if startDate is at least 24 hours in the future
+    if (!isStartDateValid(normalizedStartDate)) {
+      return res.status(400).json({
+        message: "Reservations must be made at least 24 hours in advance.",
+      });
+    }
 
     const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
     if (!available) {
@@ -232,6 +244,13 @@ const createManualBooking = async (req, res) => {
     const normalizedStartDate = new Date(startDate);
     const normalizedEndDate = new Date(endDate);
     normalizedEndDate.setHours(12, 0, 0, 0); // Set end date to 12:00 noon
+
+    // Check 24h rule
+    if (!isStartDateValid(normalizedStartDate)) {
+      return res.status(400).json({
+        message: "Reservations must be made at least 24 hours in advance.",
+      });
+    }
 
     // ✅ First, check if the room is available for the selected date range
     const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
