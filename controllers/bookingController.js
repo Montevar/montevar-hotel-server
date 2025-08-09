@@ -394,7 +394,7 @@ const verifyPayment = async (req, res) => {
         startDate: meta.startDate,
         endDate: meta.endDate,
         isPaid: true,
-        source: "ONLINE USER",
+        source: "online",
         paymentMethod: "paystack",
         paymentStatus: "PAID",
         status: "BOOKED",
