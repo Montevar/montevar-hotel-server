@@ -124,7 +124,7 @@ const createBooking = async (req, res) => {
     const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
     if (!available) {
       return res.status(400).json({
-        message: "Room is already booked or reserved for those dates.",
+        message: "This room is already booked or reserved for the selected dates. Please check other rooms.",
       });
     }
 
@@ -246,7 +246,8 @@ const createManualBooking = async (req, res) => {
     normalizedEndDate.setHours(12, 0, 0, 0); // Set end date to 12:00 noon
 
     // Check 24h rule
-    if (!isStartDateValid(normalizedStartDate)) {
+      // Apply 24h rule only if it's a reservation (not paid)
+    if (!isPaid && !isStartDateValid(normalizedStartDate)) {
       return res.status(400).json({
         message: "Reservations must be made at least 24 hours in advance.",
       });
