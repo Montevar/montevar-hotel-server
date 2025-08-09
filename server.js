@@ -44,14 +44,14 @@ app.use(cors({
 
 // ✅ Session config (single instance)
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'fallback_secret',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   store: MongoStore.create({ mongoUrl: process.env.MONGO_URI }),
   cookie: {
     httpOnly: true,
-    sameSite: process.env.ENVIRONMENT === 'production' ? 'None' : 'Lax',
-    secure: process.env.ENVIRONMENT === 'production',
+    sameSite: 'None',       // Needed for cross-site cookies in production
+    secure: true,           // Cookies sent only over HTTPS in production
     maxAge: 1000 * 60 * 60 * 24, // 24 hours
   },
 }));
