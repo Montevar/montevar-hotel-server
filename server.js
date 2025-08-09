@@ -51,10 +51,11 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: process.env.ENVIRONMENT === 'production' ? 'None' : 'Lax',
-    secure: process.env.ENVIRONMENT === 'production', // true only in prod
-    maxAge: 1000 * 60 * 30, // 30 mins
+    secure: process.env.ENVIRONMENT === 'production',
+    maxAge: 1000 * 60 * 60 * 24, // 24 hours
   },
 }));
+
 
 
 // ✅ Rate limiter
