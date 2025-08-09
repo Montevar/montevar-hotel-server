@@ -43,18 +43,24 @@ app.use(cors({
 
 
 // ✅ Session config (single instance)
+app.set('trust proxy', 1);
+
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  store: MongoStore.create({ mongoUrl: process.env.MONGO_URI }),
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGO_URI,
+    ttl: 60 * 60 * 24 * 365 * 10, // 10 years session expiration in MongoDB
+  }),
   cookie: {
     httpOnly: true,
-    sameSite: 'None',       // Needed for cross-site cookies in production
-    secure: true,           // Cookies sent only over HTTPS in production
-    maxAge: 1000 * 60 * 60 * 24, // 24 hours
+    sameSite: 'None',
+    secure: true,
+    maxAge: 1000 * 60 * 60 * 24 * 365 * 10, // 10 years cookie expiration
   },
 }));
+
 
 
 
