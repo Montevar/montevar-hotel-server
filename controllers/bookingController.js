@@ -30,7 +30,7 @@ const getBookingStatus = (booking) => {
   if (now > end) return "Expired Booking";
 
   const isAdmin = booking.source === "dashboard";
-  const isOnline = booking.source === "online" || booking.source === "user"; // for legacy "user" data
+  const isOnline = booking.source === "online" || booking.source === "user";
   const isPaid = booking.isPaid;
 
   if (isAdmin) {
@@ -38,30 +38,45 @@ const getBookingStatus = (booking) => {
   }
 
   if (isOnline) {
-    return isPaid
-      ? "Online User · Via Paystack · Paid"
-      : "Online User · Reserved · Unpaid";
+    if (isPaid) {
+      return booking.paymentMethod === "paystack"
+        ? "Online User · Via Paystack · Paid"
+        : "Online User · Settled · Paid";
+    }
+    return "Online User · Reserved · Unpaid";
   }
 
   return "Unknown Booking Source";
 };
 
 
+
 // ✅ GET all bookings
 const getBookings = async (req, res) => {
   try {
+    const now = getCurrentDateTime();
     const bookings = await Booking.find().sort({ createdAt: -1 });
 
-    const updated = bookings.map((b) => ({
-      ...b._doc,
-      status: getBookingStatus(b),
+    const updatedBookings = await Promise.all(bookings.map(async (b) => {
+      // Auto-promote reserved bookings to paid if start date has arrived
+      if (!b.isCancelled && !b.isPaid && now >= new Date(b.startDate)) {
+        b.isPaid = true;
+        b.paymentMethod = b.source === "dashboard" ? "settled" : "settled"; // mark as settled
+        await b.save();
+      }
+
+      return {
+        ...b._doc,
+        status: getBookingStatus(b),
+      };
     }));
 
-    res.json(updated);
+    res.json(updatedBookings);
   } catch (error) {
     res.status(500).json({ message: "Error fetching bookings", error });
   }
 };
+
 
 
 // Helper to check if a room is available between two dates
