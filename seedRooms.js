@@ -128,6 +128,21 @@ const rooms = [
     images: ['/images/japan.jpg'],
     amenities: ['Free WiFi', 'Mini Fridge','Room Service', 'TV', 'Bathroom Essentials']
   },
+{
+    name: 'Qatar',
+    category: 'Classic Executive',
+    price: 30000,
+    images: ['/images/qatar.jpg'],
+    amenities: ['Free WiFi', 'Mini Fridge','Room Service', 'TV', 'Bathroom Essentials']
+  },
+  {
+    name: 'Germany',
+    category: 'Classic Executive',
+    price: 30000,
+    images: ['/images/germany.jpg'],
+    amenities: ['Free WiFi', 'Mini Fridge','Room Service', 'TV', 'Bathroom Essentials']
+  },
+
 
   // Super Executive (3)
   {
