@@ -44,7 +44,7 @@ const bookingSchema = new mongoose.Schema({
 },
 paymentMethod: {
   type: String,
-  enum: ["paystack", "manual", "none"], // optional clarity
+  enum: ["paystack", "manual", "none", "settled"], // optional clarity
   default: "none",
 },
 
