@@ -108,6 +108,7 @@ app.use('/api/auth', require('./routes/auth/totp'));
 app.use('/api/protected', require('./routes/protected'));
 app.use('/api/rooms', require('./routes/roomRoutes'));
 app.use('/api/bookings', require('./routes/bookingRoutes'));
+console.log("✅ Paystack route loaded successfully");
 app.use('/api/paystack', require('./routes/paystackRoutes'));
 
 // ✅ Catch-all for 404
