@@ -431,7 +431,7 @@ const verifyPayment = async (req, res) => {
         isPaid: true,
         source: "online",
         paymentMethod: "paystack",
-        paymentStatus: "PAID",
+        paymentStatus: "paid",
         status: "BOOKED",
         reference: reference,
       });
