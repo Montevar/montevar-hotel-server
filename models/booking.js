@@ -48,6 +48,13 @@ paymentMethod: {
   default: "none",
 },
 
+  paymentStatus: {
+  type: String,
+  enum: ["pending", "paid", "settled"],
+  default: "pending",
+},
+
+
   isCancelled: {
     type: Boolean,
     default: false,
