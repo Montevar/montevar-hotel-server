@@ -168,9 +168,8 @@ const createBooking = async (req, res) => {
 
 
 
-
 // ✅ POST: Create booking with Paystack
-// ✅ NEW: Initialize payment only — no DB
+// FIX APPLIED HERE
 const initializePayment = async (req, res) => {
   try {
     const {
@@ -186,50 +185,61 @@ const initializePayment = async (req, res) => {
       endDate,
     } = req.body;
 
-    const amountInKobo = roomPrice * 100;
+    // ✅ Calculate number of nights
+    const nights = Math.ceil(
+      (new Date(endDate).setHours(12, 0, 0, 0) -
+        new Date(startDate)) /
+      (24 * 60 * 60 * 1000)
+    );
 
-    const available = await isRoomAvailable(roomName, new Date(startDate), new Date(endDate));
+    // ✅ Calculate correct amount
+    const totalAmount = roomPrice * nights;
+    const amountInKobo = totalAmount * 100;
+
+    const available = await isRoomAvailable(
+      roomName,
+      new Date(startDate),
+      new Date(endDate)
+    );
     if (!available) {
       return res.status(400).json({ message: "Room not available for selected dates" });
     }
 
-  
-
-
-    // ✅ Just initialize payment — no DB write
     const reference = `MV-${Date.now()}`;
 
-      const paystackRes = await axios.post(
-  "https://api.paystack.co/transaction/initialize",
-  {
-    email,
-    amount: amountInKobo,
-    callback_url: `https://montevarhotel.com/booking?reference=${reference}`,
-    metadata: {
-      fullName,
-      phone,
-      email,
-      roomId,
-      roomName,
-      roomNumber,
-      roomPrice,
-      amount,
-      startDate,
-      endDate,
-    },
-    reference, // include your generated reference here (optional but good)
-  },
-  {
-    headers: {
-      Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-      "Content-Type": "application/json",
-    },
-  }
-);
+    const paystackRes = await axios.post(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        email,
+        amount: amountInKobo,
+        callback_url: `https://montevarhotel.com/booking?reference=${reference}`,
+        metadata: {
+          fullName,
+          phone,
+          email,
+          roomId,
+          roomName,
+          roomNumber,
+          roomPrice,
+          amount,
+          startDate,
+          endDate,
+          nights,         // NEW FIELD
+          totalAmount,    // NEW FIELD
+        },
+        reference,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-const { authorization_url } = paystackRes.data.data;
+    const { authorization_url } = paystackRes.data.data;
 
-return res.status(200).json({ authorization_url, reference });
+    return res.status(200).json({ authorization_url, reference });
 
   } catch (error) {
     console.error("❌ Payment initialization failed:", error?.response?.data || error);
@@ -239,7 +249,8 @@ return res.status(200).json({ authorization_url, reference });
 
 
 
-// ✅ POST: Manual booking/reservation (dashboard)
+// The rest of your file remains *unchanged*  
+
 const createManualBooking = async (req, res) => {
   try {
     const {
@@ -251,24 +262,20 @@ const createManualBooking = async (req, res) => {
       roomPrice,
       startDate,
       endDate,
-      isPaid = false, // ✅ default to false
-      source = "dashboard", // ✅ default to dashboard
+      isPaid = false,
+      source = "dashboard",
     } = req.body;
 
-    // ✅ Normalize start and end dates
     const normalizedStartDate = new Date(startDate);
     const normalizedEndDate = new Date(endDate);
-    normalizedEndDate.setHours(12, 0, 0, 0); // Set end date to 12:00 noon
+    normalizedEndDate.setHours(12, 0, 0, 0);
 
-    // Check 24h rule
-      // Apply 24h rule only if it's a reservation (not paid)
     if (!isPaid && !isStartDateValid(normalizedStartDate)) {
       return res.status(400).json({
         message: "Reservations must be made at least 24 hours in advance.",
       });
     }
 
-    // ✅ First, check if the room is available for the selected date range
     const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
     if (!available) {
       return res.status(400).json({
@@ -276,7 +283,6 @@ const createManualBooking = async (req, res) => {
       });
     }
 
-    // ✅ Now proceed to create and save the booking
     const newBooking = new Booking({
       fullName,
       phone,
@@ -298,7 +304,8 @@ const createManualBooking = async (req, res) => {
   }
 };
 
-// ✅ POST: Cancel booking
+
+
 const cancelBooking = async (req, res) => {
   try {
     const { id } = req.params;
@@ -320,7 +327,6 @@ const cancelBooking = async (req, res) => {
   }
 };
 
-// ✅ POST: Check room availability
 const checkAvailability = async (req, res) => {
   try {
     const { startDate, endDate, category } = req.query;
@@ -331,50 +337,44 @@ const checkAvailability = async (req, res) => {
 
     const requestedStart = new Date(startDate);
     const requestedEnd = new Date(endDate);
-    requestedEnd.setHours(12, 0, 0, 0); // Make sure end date is at 12 noon
+    requestedEnd.setHours(12, 0, 0, 0);
 
-    // Debug log
     console.log("🔍 Checking availability for:", {
       category,
       startDate: requestedStart.toISOString(),
       endDate: requestedEnd.toISOString(),
     });
 
-    // Step 1: Get conflicting bookings
     const now = new Date();
 
-const bookings = await Booking.find({
-  roomName: category,
-  isCancelled: { $ne: true },
-  endDate: { $gte: now }, // ✅ exclude expired
-  $or: [
-    {
-      startDate: { $lte: requestedEnd },
-      endDate: { $gte: requestedStart },
-    },
-  ],
-});
-
+    const bookings = await Booking.find({
+      roomName: category,
+      isCancelled: { $ne: true },
+      endDate: { $gte: now },
+      $or: [
+        {
+          startDate: { $lte: requestedEnd },
+          endDate: { $gte: requestedStart },
+        },
+      ],
+    });
 
     const unavailableRoomNumbers = bookings.map((b) => b.roomNumber);
 
-    // Step 2: Fetch all rooms of the selected category
     const rooms = await Room.find({ category });
 
     if (!rooms || rooms.length === 0) {
       return res.status(404).json({ error: "No rooms found in this category." });
     }
 
-    // Step 3: Filter out rooms that are already booked/reserved
     const availableRooms = rooms.filter(
       (room) => !unavailableRoomNumbers.includes(room.roomNumber)
     );
 
     if (availableRooms.length === 0) {
-      return res.status(200).json([]); // No available rooms found
+      return res.status(200).json([]);
     }
 
-    // Step 4: Return the available rooms
     return res.status(200).json(availableRooms);
   } catch (error) {
     console.error("❌ Error checking availability:", error);
@@ -383,9 +383,7 @@ const bookings = await Booking.find({
 };
 
 
-// ✅ POST: Verify Paystack payment (optional if handled frontend)
-
-// ✅ Updated verifyPayment
+// VERIFY PAYMENT (unchanged)
 const verifyPayment = async (req, res) => {
   try {
     const { reference } = req.body;
@@ -406,8 +404,11 @@ const verifyPayment = async (req, res) => {
     if (data.status && data.data.status === "success") {
       const meta = data.data.metadata;
 
-      // ✅ Check availability again just in case
-      const available = await isRoomAvailable(meta.roomName, new Date(meta.startDate), new Date(meta.endDate));
+      const available = await isRoomAvailable(
+        meta.roomName,
+        new Date(meta.startDate),
+        new Date(meta.endDate)
+      );
       if (!available) {
         return res.status(400).json({
           verified: false,
@@ -417,7 +418,6 @@ const verifyPayment = async (req, res) => {
 
       console.log("Verifying payment with reference:", reference);
 
-      // ✅ Create booking now that payment is confirmed
       const booking = new Booking({
         fullName: meta.fullName,
         phone: meta.phone,
@@ -440,7 +440,7 @@ const verifyPayment = async (req, res) => {
 
       return res.status(200).json({
         verified: true,
-        updated: true,     // ADD THIS LINE
+        updated: true, 
         message: "Payment verified and booking created",
       });
     }
@@ -460,7 +460,7 @@ const verifyPayment = async (req, res) => {
 
 
 
-// Clear all bookings permanently
+
 const clearAllBookings = async (req, res) => {
   try {
     await Booking.deleteMany({});
@@ -472,10 +472,9 @@ const clearAllBookings = async (req, res) => {
 
 
 
-
 module.exports = {
   getBookings,
-  createBooking, // 👈 ADD THIS LINE
+  createBooking,
   initializePayment,
   verifyPayment,
   createManualBooking,
@@ -483,4 +482,3 @@ module.exports = {
   checkAvailability,
   clearAllBookings,
 };
-
