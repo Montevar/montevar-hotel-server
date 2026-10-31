@@ -4,6 +4,7 @@ const roomSchema = new mongoose.Schema({
   name: { type: String, required: true },
   category: { type: String, required: true },
   price: { type: Number, required: true },
+  roomNumber: { type: String }, // stored as text in the database, e.g. "020"
   images: [String],
   amenities: [String],
 });

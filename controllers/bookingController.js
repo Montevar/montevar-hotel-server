@@ -2,111 +2,120 @@ const Booking = require("../models/booking");
 const Room = require("../models/room");
 const axios = require("axios");
 
-// Utility: Get current datetime
-const getCurrentDateTime = () => {
-  const now = new Date();
-  now.setSeconds(0, 0);
-  return now;
+const PAYSTACK_BASE_URL = process.env.PAYSTACK_BASE_URL || "https://api.paystack.co";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.montevarhotel.com";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CHECK_IN_HOUR = 14; // 2:00 PM (hotel time, see TZ in server.js)
+const CHECK_OUT_HOUR = 12; // 12:00 noon
+const PAYMENT_HOLD_MINUTES = 30; // room is held this long while the guest pays on Paystack
+
+const paystackHeaders = () => ({
+  Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+  "Content-Type": "application/json",
+});
+
+// Utility: read the calendar day from "YYYY-MM-DD" (or an ISO string) as local midnight
+const dayOf = (value) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
 };
 
-// Utility: Check if room is currently booked/reserved
-const isRoomUnavailable = (booking) => {
-  const now = getCurrentDateTime();
-  const start = new Date(booking.startDate);
-  const end = new Date(booking.endDate);
-  end.setHours(12, 0, 0, 0); // Booking expires at 12:00 noon
+// Utility: turn check-in/check-out dates into exact times and a night count
+const parseStay = (startDate, endDate) => {
+  const startDay = dayOf(startDate);
+  const endDay = dayOf(endDate);
+  if (!startDay || !endDay) {
+    return { error: "Please provide valid check-in and check-out dates." };
+  }
 
-  return !booking.isCancelled && now >= start && now <= end;
+  const nights = Math.round((endDay - startDay) / DAY_MS);
+  if (nights < 1) {
+    return { error: "Check-out must be at least one day after check-in." };
+  }
+
+  const start = new Date(startDay);
+  start.setHours(CHECK_IN_HOUR, 0, 0, 0);
+  const end = new Date(endDay);
+  end.setHours(CHECK_OUT_HOUR, 0, 0, 0);
+
+  return { start, end, nights };
 };
+
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const isStartDateValid = (startDate) => {
+  const minStart = new Date(Date.now() + DAY_MS); // now + 24 hours
+  return startDate >= minStart;
+};
+
+// Query for bookings that block a room between start and end.
+// Unpaid Paystack holds stop blocking the room once they expire.
+const blockingBookingsQuery = (roomNames, start, end, excludeId) => {
+  const query = {
+    roomName: Array.isArray(roomNames) ? { $in: roomNames } : roomNames,
+    isCancelled: { $ne: true },
+    startDate: { $lt: end },
+    endDate: { $gt: start },
+    $or: [{ holdExpiresAt: null }, { holdExpiresAt: { $gt: new Date() } }, { isPaid: true }],
+  };
+  if (excludeId) query._id = { $ne: excludeId };
+  return query;
+};
+
+// Helper to check if a room is available between two dates
+const isRoomAvailable = async (roomName, start, end, excludeId) => {
+  const clash = await Booking.exists(blockingBookingsQuery(roomName, start, end, excludeId));
+  return !clash;
+};
+
+const missingGuestDetails = ({ fullName, phone, email }) => !fullName || !phone || !email;
 
 // Utility: Determine booking status
 const getBookingStatus = (booking) => {
-  const now = getCurrentDateTime();
-  const start = new Date(booking.startDate);
+  const now = new Date();
   const end = new Date(booking.endDate);
-  end.setHours(12, 0, 0, 0);
 
   if (booking.isCancelled) return "Canceled Booking";
   if (now > end) return "Expired Booking";
 
   const isAdmin = booking.source === "dashboard";
-  const isOnline = booking.source === "online" || booking.source === "user";
   const isPaid = booking.isPaid;
 
   if (isAdmin) {
     return isPaid ? "Admin · Booked · Paid" : "Admin · Reserved";
   }
 
-  if (isOnline) {
-    if (isPaid) {
-      return booking.paymentMethod === "paystack"
-        ? "Online User · Via Paystack · Paid"
-        : "Online User · Settled · Paid";
-    }
-    return "Online User · Reserved · Unpaid";
+  if (isPaid) {
+    return booking.paymentMethod === "paystack"
+      ? "Online User · Via Paystack · Paid"
+      : "Online User · Settled · Paid";
   }
 
-  return "Unknown Booking Source";
+  if (booking.holdExpiresAt) return "Online User · Awaiting Paystack Payment";
+  return "Online User · Reserved · Unpaid";
 };
 
 
 
-// ✅ GET all bookings
+// ✅ GET all bookings (admin)
 const getBookings = async (req, res) => {
   try {
-    const now = getCurrentDateTime();
-    const bookings = await Booking.find().sort({ createdAt: -1 });
+    // Hide abandoned Paystack checkouts (hold expired, never paid)
+    const bookings = await Booking.find({
+      $nor: [{ isPaid: false, holdExpiresAt: { $lte: new Date() } }],
+    }).sort({ _id: -1 });
 
-    const updatedBookings = await Promise.all(bookings.map(async (b) => {
-      // Auto-promote reserved bookings to paid if start date has arrived
-      if (!b.isCancelled && !b.isPaid && now >= new Date(b.startDate)) {
-        b.isPaid = true;
-        b.paymentMethod = b.source === "dashboard" ? "settled" : "settled"; // mark as settled
-        await b.save();
-      }
-
-      return {
-        ...b._doc,
-        status: getBookingStatus(b),
-      };
-    }));
-
-    res.json(updatedBookings);
+    res.json(bookings.map((b) => ({ ...b.toObject(), status: getBookingStatus(b) })));
   } catch (error) {
-    res.status(500).json({ message: "Error fetching bookings", error });
+    res.status(500).json({ message: "Error fetching bookings" });
   }
-};
-
-
-
-// Helper to check if a room is available between two dates
-const isRoomAvailable = async (roomName, startDate, endDate) => {
-  const requestedStart = new Date(startDate);
-  const requestedEnd = new Date(endDate);
-  requestedEnd.setHours(12, 0, 0, 0);
-
-  const now = new Date();
-
-  const existingBookings = await Booking.find({
-    roomName,
-    isCancelled: { $ne: true },
-    endDate: { $gte: now }, // ✅ exclude expired bookings
-    $or: [
-      {
-        startDate: { $lte: requestedEnd },
-        endDate: { $gte: requestedStart },
-      },
-    ],
-  });
-
-  return existingBookings.length === 0;
-};
-
-
-const isStartDateValid = (startDate) => {
-  const now = new Date();
-  const minStart = new Date(now.getTime() + 24 * 60 * 60 * 1000); // now + 24 hours
-  return startDate >= minStart;
 };
 
 
@@ -114,29 +123,26 @@ const isStartDateValid = (startDate) => {
 // ✅ POST: Create booking (without payment — online reservation)
 const createBooking = async (req, res) => {
   try {
-    const {
-      fullName,
-      phone,
-      email,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate,
-      endDate,
-    } = req.body;
+    const { fullName, phone, email, roomName, startDate, endDate } = req.body;
 
-    const normalizedStartDate = new Date(startDate);
-    const normalizedEndDate = new Date(endDate);
-    normalizedEndDate.setHours(12, 0, 0, 0);
+    if (missingGuestDetails(req.body) || !roomName) {
+      return res.status(400).json({ message: "Please fill in your name, email, phone and room." });
+    }
+
+    const stay = parseStay(startDate, endDate);
+    if (stay.error) return res.status(400).json({ message: stay.error });
 
     // Check if startDate is at least 24 hours in the future
-    if (!isStartDateValid(normalizedStartDate)) {
+    if (!isStartDateValid(stay.start)) {
       return res.status(400).json({
         message: "Reservations must be made at least 24 hours in advance.",
       });
     }
 
-    const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
+    const room = await Room.findOne({ name: String(roomName) });
+    if (!room) return res.status(404).json({ message: "Room not found." });
+
+    const available = await isRoomAvailable(room.name, stay.start, stay.end);
     if (!available) {
       return res.status(400).json({
         message: "This room is already booked or reserved for the selected dates. Please check other rooms.",
@@ -147,11 +153,13 @@ const createBooking = async (req, res) => {
       fullName,
       phone,
       email,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate: normalizedStartDate,
-      endDate: normalizedEndDate,
+      roomName: room.name,
+      roomNumber: Number(room.roomNumber) || 0,
+      roomPrice: room.price, // always use the price from the database, not the browser
+      nights: stay.nights,
+      totalAmount: room.price * stay.nights,
+      startDate: stay.start,
+      endDate: stay.end,
       isPaid: false,
       source: "online",
     });
@@ -161,122 +169,166 @@ const createBooking = async (req, res) => {
     res.status(201).json({ message: "Booking created (without payment)", booking });
   } catch (error) {
     console.error("❌ Booking creation error:", error);
-    res.status(500).json({ message: "Booking failed", error: error.message });
+    res.status(500).json({ message: "Booking failed" });
   }
 };
 
 
 
 
-// ✅ POST: Create booking with Paystack
-// FIX APPLIED HERE
+// ✅ POST: Hold the room and start a Paystack payment
 const initializePayment = async (req, res) => {
+  let hold;
   try {
-    const {
-      fullName,
-      phone,
-      email,
-      roomId,
-      roomName,
-      roomNumber,
-      roomPrice,
-      amount,
-      startDate,
-      endDate,
-    } = req.body;
+    const { fullName, phone, email, roomName, startDate, endDate } = req.body;
 
-    // ✅ Calculate number of nights
-    const nights = Math.ceil(
-      (new Date(endDate).setHours(12, 0, 0, 0) -
-        new Date(startDate)) /
-      (24 * 60 * 60 * 1000)
-    );
+    if (missingGuestDetails(req.body) || !roomName) {
+      return res.status(400).json({ message: "Please fill in your name, email, phone and room." });
+    }
 
-    // ✅ Calculate correct amount
-    const totalAmount = roomPrice * nights;
-    const amountInKobo = totalAmount * 100;
+    const stay = parseStay(startDate, endDate);
+    if (stay.error) return res.status(400).json({ message: stay.error });
+    if (stay.start < startOfToday()) {
+      return res.status(400).json({ message: "Check-in date can't be in the past." });
+    }
 
-    const available = await isRoomAvailable(
-      roomName,
-      new Date(startDate),
-      new Date(endDate)
-    );
+    const room = await Room.findOne({ name: String(roomName) });
+    if (!room) return res.status(404).json({ message: "Room not found." });
+
+    const available = await isRoomAvailable(room.name, stay.start, stay.end);
     if (!available) {
       return res.status(400).json({ message: "Room not available for selected dates" });
     }
 
-    const reference = `MV-${Date.now()}`;
+    // ✅ Price comes from the database: price per night × nights
+    const totalAmount = room.price * stay.nights;
+    const reference = `MV-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Hold the room while the guest pays, so nobody else can take it meanwhile
+    hold = await Booking.create({
+      fullName,
+      phone,
+      email,
+      roomName: room.name,
+      roomNumber: Number(room.roomNumber) || 0,
+      roomPrice: room.price,
+      nights: stay.nights,
+      totalAmount,
+      startDate: stay.start,
+      endDate: stay.end,
+      isPaid: false,
+      source: "online",
+      paymentMethod: "paystack",
+      paymentStatus: "pending",
+      reference,
+      holdExpiresAt: new Date(Date.now() + PAYMENT_HOLD_MINUTES * 60 * 1000),
+    });
 
     const paystackRes = await axios.post(
-      "https://api.paystack.co/transaction/initialize",
+      `${PAYSTACK_BASE_URL}/transaction/initialize`,
       {
         email,
-        amount: amountInKobo,
-        callback_url: `https://montevarhotel.com/booking?reference=${reference}`,
+        amount: totalAmount * 100, // Paystack uses kobo
+        reference,
+        callback_url: `${FRONTEND_URL}/booking`, // Paystack adds ?reference=...
         metadata: {
+          bookingId: hold._id.toString(),
           fullName,
           phone,
-          email,
-          roomId,
-          roomName,
-          roomNumber,
-          roomPrice,
-          amount,
+          roomName: room.name,
           startDate,
           endDate,
-          nights,         // NEW FIELD
-          totalAmount,    // NEW FIELD
+          nights: stay.nights,
+          totalAmount,
         },
-        reference,
       },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
+      { headers: paystackHeaders() }
     );
 
     const { authorization_url } = paystackRes.data.data;
 
-    return res.status(200).json({ authorization_url, reference });
-
+    return res.status(200).json({ authorization_url, reference, totalAmount, nights: stay.nights });
   } catch (error) {
     console.error("❌ Payment initialization failed:", error?.response?.data || error);
-    return res.status(500).json({ message: "Failed to initialize payment", error });
+    if (hold) await Booking.deleteOne({ _id: hold._id }).catch(() => {});
+    return res.status(500).json({ message: "Failed to initialize payment" });
   }
 };
 
 
 
-// The rest of your file remains *unchanged*  
+// Mark a successful Paystack transaction as paid. Safe to call more than once
+// (the browser redirect and the Paystack webhook can both arrive).
+const finalizePaystackPayment = async (tx) => {
+  const reference = tx.reference;
+  let booking = await Booking.findOne({ reference });
+
+  if (booking && booking.isPaid) return { booking, conflict: !!booking.needsAttention };
+
+  if (!booking) {
+    // Payment started before room holds existed: rebuild the booking from metadata
+    const meta = tx.metadata || {};
+    const stay = parseStay(meta.startDate, meta.endDate);
+    if (stay.error) throw new Error(`Cannot build booking for ${reference}: ${stay.error}`);
+    booking = new Booking({
+      fullName: meta.fullName,
+      phone: meta.phone,
+      email: meta.email || tx.customer?.email,
+      roomName: meta.roomName,
+      roomNumber: Number(meta.roomNumber) || 0,
+      roomPrice: Number(meta.roomPrice) || 0,
+      nights: stay.nights,
+      totalAmount: tx.amount / 100,
+      startDate: stay.start,
+      endDate: stay.end,
+      source: "online",
+      reference,
+    });
+  }
+
+  const problems = [];
+  // Someone else took the room after this guest's hold expired
+  const available = await isRoomAvailable(booking.roomName, booking.startDate, booking.endDate, booking._id);
+  if (!available) problems.push("Room was taken by another booking — move the guest or refund");
+  if (booking.totalAmount && tx.amount < booking.totalAmount * 100) {
+    problems.push(`Paid ₦${(tx.amount / 100).toLocaleString()} but total is ₦${booking.totalAmount.toLocaleString()}`);
+  }
+
+  booking.isPaid = true;
+  booking.paymentMethod = "paystack";
+  booking.paymentStatus = "paid";
+  booking.amountPaid = tx.amount / 100;
+  booking.holdExpiresAt = undefined;
+  booking.needsAttention = problems.length ? problems.join("; ") : undefined;
+  await booking.save();
+
+  return { booking, conflict: problems.length > 0 };
+};
+
+
 
 const createManualBooking = async (req, res) => {
   try {
-    const {
-      fullName,
-      phone,
-      email,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate,
-      endDate,
-      isPaid = false,
-      source = "dashboard",
-    } = req.body;
+    const { fullName, phone, email, roomName, startDate, endDate } = req.body;
+    const isPaid = req.body.isPaid === true;
 
-    const normalizedStartDate = new Date(startDate);
-    const normalizedEndDate = new Date(endDate);
-    normalizedEndDate.setHours(12, 0, 0, 0);
+    if (missingGuestDetails(req.body) || !roomName) {
+      return res.status(400).json({ message: "Please fill in name, email, phone and room." });
+    }
 
-    if (!isPaid && !isStartDateValid(normalizedStartDate)) {
+    const stay = parseStay(startDate, endDate);
+    if (stay.error) return res.status(400).json({ message: stay.error });
+
+    if (!isPaid && !isStartDateValid(stay.start)) {
       return res.status(400).json({
         message: "Reservations must be made at least 24 hours in advance.",
       });
     }
 
-    const available = await isRoomAvailable(roomName, normalizedStartDate, normalizedEndDate);
+    const room = await Room.findOne({ name: String(roomName) });
+    if (!room) return res.status(404).json({ message: "Room not found." });
+
+    const available = await isRoomAvailable(room.name, stay.start, stay.end);
     if (!available) {
       return res.status(400).json({
         message: "This room is already booked or reserved for the selected dates. Please check other rooms.",
@@ -287,13 +339,17 @@ const createManualBooking = async (req, res) => {
       fullName,
       phone,
       email,
-      roomName,
-      roomNumber,
-      roomPrice,
-      startDate: normalizedStartDate,
-      endDate: normalizedEndDate,
+      roomName: room.name,
+      roomNumber: Number(room.roomNumber) || 0,
+      roomPrice: room.price,
+      nights: stay.nights,
+      totalAmount: room.price * stay.nights,
+      startDate: stay.start,
+      endDate: stay.end,
       isPaid,
-      source,
+      paymentMethod: isPaid ? "manual" : "none",
+      paymentStatus: isPaid ? "paid" : "pending",
+      source: "dashboard",
     });
 
     await newBooking.save();
@@ -313,9 +369,7 @@ const cancelBooking = async (req, res) => {
     const booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    const now = getCurrentDateTime();
-    const start = new Date(booking.startDate);
-    if (now >= start)
+    if (new Date() >= new Date(booking.startDate))
       return res.status(400).json({ message: "Cannot cancel after start date" });
 
     booking.isCancelled = true;
@@ -323,7 +377,26 @@ const cancelBooking = async (req, res) => {
 
     res.json({ message: "Booking cancelled", booking });
   } catch (error) {
-    res.status(500).json({ message: "Cancellation failed", error });
+    res.status(500).json({ message: "Cancellation failed" });
+  }
+};
+
+// ✅ Admin records that a reservation has been paid (cash, transfer, POS)
+const markBookingPaid = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.isCancelled) return res.status(400).json({ message: "Booking is cancelled" });
+
+    booking.isPaid = true;
+    booking.paymentMethod = "settled";
+    booking.paymentStatus = "settled";
+    booking.holdExpiresAt = undefined;
+    await booking.save();
+
+    res.json({ message: "Booking marked as paid", booking: { ...booking.toObject(), status: getBookingStatus(booking) } });
+  } catch (error) {
+    res.status(500).json({ message: "Could not mark booking as paid" });
   }
 };
 
@@ -335,31 +408,8 @@ const checkAvailability = async (req, res) => {
       return res.status(400).json({ error: "Missing required query parameters" });
     }
 
-    const requestedStart = new Date(startDate);
-    const requestedEnd = new Date(endDate);
-    requestedEnd.setHours(12, 0, 0, 0);
-
-    console.log("🔍 Checking availability for:", {
-      category,
-      startDate: requestedStart.toISOString(),
-      endDate: requestedEnd.toISOString(),
-    });
-
-    const now = new Date();
-
-    const bookings = await Booking.find({
-      roomName: category,
-      isCancelled: { $ne: true },
-      endDate: { $gte: now },
-      $or: [
-        {
-          startDate: { $lte: requestedEnd },
-          endDate: { $gte: requestedStart },
-        },
-      ],
-    });
-
-    const unavailableRoomNumbers = bookings.map((b) => b.roomNumber);
+    const stay = parseStay(startDate, endDate);
+    if (stay.error) return res.status(400).json({ error: stay.error });
 
     const rooms = await Room.find({ category });
 
@@ -367,13 +417,16 @@ const checkAvailability = async (req, res) => {
       return res.status(404).json({ error: "No rooms found in this category." });
     }
 
-    const availableRooms = rooms.filter(
-      (room) => !unavailableRoomNumbers.includes(room.roomNumber)
+    // Bookings store the room's own name (e.g. "Malaysia"), not the category
+    const bookings = await Booking.find(
+      blockingBookingsQuery(rooms.map((room) => room.name), stay.start, stay.end)
     );
 
-    if (availableRooms.length === 0) {
-      return res.status(200).json([]);
-    }
+    const unavailableRoomNames = new Set(bookings.map((b) => b.roomName));
+
+    const availableRooms = rooms.filter(
+      (room) => !unavailableRoomNames.has(room.name)
+    );
 
     return res.status(200).json(availableRooms);
   } catch (error) {
@@ -383,7 +436,7 @@ const checkAvailability = async (req, res) => {
 };
 
 
-// VERIFY PAYMENT (unchanged)
+// ✅ Called by the booking page after Paystack redirects back
 const verifyPayment = async (req, res) => {
   try {
     const { reference } = req.body;
@@ -393,68 +446,37 @@ const verifyPayment = async (req, res) => {
     }
 
     const { data } = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-        },
-      }
+      `${PAYSTACK_BASE_URL}/transaction/verify/${encodeURIComponent(reference)}`,
+      { headers: paystackHeaders() }
     );
 
-    if (data.status && data.data.status === "success") {
-      const meta = data.data.metadata;
-
-      const available = await isRoomAvailable(
-        meta.roomName,
-        new Date(meta.startDate),
-        new Date(meta.endDate)
-      );
-      if (!available) {
-        return res.status(400).json({
-          verified: false,
-          message: "Room is no longer available",
-        });
-      }
-
-      console.log("Verifying payment with reference:", reference);
-
-      const booking = new Booking({
-        fullName: meta.fullName,
-        phone: meta.phone,
-        email: meta.email,
-        roomId: meta.roomId,
-        roomName: meta.roomName,
-        roomNumber: meta.roomNumber,
-        roomPrice: meta.roomPrice,
-        startDate: meta.startDate,
-        endDate: meta.endDate,
-        isPaid: true,
-        source: "online",
-        paymentMethod: "paystack",
-        paymentStatus: "paid",
-        status: "BOOKED",
-        reference: reference,
-      });
-
-      await booking.save();
-
-      return res.status(200).json({
-        verified: true,
-        updated: true, 
-        message: "Payment verified and booking created",
+    if (!(data.status && data.data.status === "success")) {
+      return res.status(400).json({
+        verified: false,
+        message: "Payment not successful",
       });
     }
 
-    return res.status(400).json({
-      verified: false,
-      message: "Payment not successful",
+    const { booking, conflict } = await finalizePaystackPayment(data.data);
+
+    return res.status(200).json({
+      verified: true,
+      updated: true,
+      conflict,
+      message: conflict
+        ? "Payment received, but there is a problem with this booking. The hotel will contact you to sort it out."
+        : "Payment verified and booking confirmed",
+      booking: {
+        roomName: booking.roomName,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+        nights: booking.nights,
+        amountPaid: booking.amountPaid,
+      },
     });
   } catch (err) {
     console.error("❌ Verification error:", err?.response?.data || err);
-    return res.status(500).json({
-      message: "Error verifying payment",
-      error: err.message,
-    });
+    return res.status(500).json({ message: "Error verifying payment" });
   }
 };
 
@@ -477,8 +499,10 @@ module.exports = {
   createBooking,
   initializePayment,
   verifyPayment,
+  finalizePaystackPayment,
   createManualBooking,
   cancelBooking,
+  markBookingPaid,
   checkAvailability,
   clearAllBookings,
 };

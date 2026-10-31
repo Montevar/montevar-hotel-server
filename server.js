@@ -1,5 +1,8 @@
 // server/server.js
 
+// All booking dates/times (2 PM check-in, noon check-out) are in hotel time
+process.env.TZ = 'Africa/Lagos';
+
 require('dotenv').config();
 const express = require('express');
 const app = express();
@@ -11,7 +14,6 @@ const rateLimit = require('express-rate-limit');
 const logger = require('morgan');
 const cors = require('cors');
 const path = require('path');
-const room = require('./models/room');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
 
@@ -21,14 +23,18 @@ connectDB();
 // ✅ Middleware
 app.use(helmet());
 app.use(logger('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({
+  limit: '50kb',
+  // Keep the raw body so the Paystack webhook signature can be checked
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 
-// ✅ CORS for local frontend
+// ✅ CORS: live frontends, plus any extra (e.g. http://localhost:3000) from EXTRA_CORS_ORIGINS
 const allowedOrigins = [
   'https://montevar-hotel-frontend.vercel.app',
   'https://montevarhotel.com',
   'https://www.montevarhotel.com',
+  ...(process.env.EXTRA_CORS_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean),
 ];
 
 
@@ -53,13 +59,14 @@ app.use(session({
   saveUninitialized: false,
   store: MongoStore.create({
     mongoUrl: process.env.MONGO_URI,
-    ttl: 60 * 60 * 24 * 365 * 10, // 10 years session expiration in MongoDB
+    ttl: 60 * 60 * 12, // 12 hours session expiration in MongoDB
   }),
   cookie: {
     httpOnly: true,
-    sameSite: 'None',
-    secure: true,
-    maxAge: 1000 * 60 * 60 * 24 * 365 * 10, // 10 years cookie expiration
+    // COOKIE_INSECURE=true only for local development over http://
+    sameSite: process.env.COOKIE_INSECURE === 'true' ? 'Lax' : 'None',
+    secure: process.env.COOKIE_INSECURE !== 'true',
+    maxAge: 1000 * 60 * 60 * 12, // 12 hours cookie expiration
   },
 }));
 
@@ -85,31 +92,12 @@ app.use(
   })
 );
 
-// ✅ Debug test route (dev only)
-app.get('/api/debug-rooms', async (req, res) => {
-  try {
-    const rooms = await room.find();
-    res.json({
-      total: rooms.length,
-      sample: rooms.slice(0, 5),
-      categories: rooms.map(r => ({
-        name: r.name,
-        category: r.category,
-      })),
-    });
-  } catch (err) {
-    console.error('[DEBUG_ROOMS_ERROR]', err);
-    res.status(500).json({ message: 'Error fetching rooms' });
-  }
-});
-
 // ✅ Main API routes
 app.use('/api/auth', require('./routes/auth/totp'));
-app.use('/api/protected', require('./routes/protected'));
 app.use('/api/rooms', require('./routes/roomRoutes'));
 app.use('/api/bookings', require('./routes/bookingRoutes'));
-console.log("✅ Paystack route loaded successfully");
 app.use('/api/paystack', require('./routes/paystackRoutes'));
+app.use('/api/manager', require('./routes/managerRoutes'));
 
 // ✅ Catch-all for 404
 app.use((req, res) => {

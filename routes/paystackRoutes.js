@@ -2,18 +2,8 @@ const express = require("express");
 const router = express.Router();
 const paystackController = require("../controllers/paystackController");
 
-// ✅ Middleware to validate incoming request
-const validatePaystackInit = (req, res, next) => {
-  const { email, amount } = req.body;
-
-  if (!email || !amount) {
-    return res.status(400).json({ message: "Email and amount are required" });
-  }
-
-  next();
-};
-
-// ✅ POST /api/paystack/initialize - initialize Paystack transaction
-router.post("/initialize", validatePaystackInit, paystackController.initializeTransaction);
+// ✅ POST /api/paystack/webhook - Paystack tells us about successful payments
+// (set this URL in Paystack Dashboard → Settings → API Keys & Webhooks)
+router.post("/webhook", paystackController.handleWebhook);
 
 module.exports = router;

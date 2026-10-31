@@ -1,25 +1,36 @@
-const axios = require("axios");
+const crypto = require("crypto");
+const { finalizePaystackPayment } = require("./bookingController");
 
-exports.initializeTransaction = async (req, res) => {
+// Paystack signs each webhook with HMAC-SHA512 of the raw body using our secret key
+const isValidSignature = (req) => {
+  const signature = req.headers["x-paystack-signature"];
+  if (!signature || !req.rawBody || !process.env.PAYSTACK_SECRET_KEY) return false;
+
+  const expected = crypto
+    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+    .update(req.rawBody)
+    .digest("hex");
+
+  return (
+    signature.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  );
+};
+
+// Creates/confirms the booking even if the guest closed the browser after paying
+exports.handleWebhook = async (req, res) => {
+  if (!isValidSignature(req)) {
+    return res.status(401).json({ message: "Invalid signature" });
+  }
+
+  const event = req.body;
   try {
-    const { email, amount } = req.body;
-
-    const response = await axios.post(
-      "https://api.paystack.co/transaction/initialize",
-      {
-        email,
-        amount: amount * 100, // Paystack expects amount in kobo
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    res.status(200).json(response.data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (event.event === "charge.success" && event.data?.status === "success") {
+      await finalizePaystackPayment(event.data);
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Paystack webhook error:", err);
+    res.sendStatus(500); // Paystack will retry
   }
 };
