@@ -175,9 +175,10 @@ const naira = (n) => `₦${Number(n).toLocaleString("en-NG")}`;
 // ✅ GET all bookings (admin)
 const getBookings = async (req, res) => {
   try {
-    // Hide abandoned Paystack checkouts (hold expired, never paid)
+    // Online payments appear only once Paystack confirms them: hide checkouts that are
+    // still in progress or were abandoned (they still hold the room while in progress)
     const bookings = await Booking.find({
-      $nor: [{ isPaid: false, holdExpiresAt: { $lte: new Date() } }],
+      $nor: [{ isPaid: false, holdExpiresAt: { $ne: null } }],
     }).sort({ _id: -1 });
 
     res.json(bookings.map((b) => ({
