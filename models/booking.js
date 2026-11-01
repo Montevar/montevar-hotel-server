@@ -69,6 +69,17 @@ paymentMethod: {
     default: false,
   },
 
+  // A discount the receptionist gave at the front desk. It only comes off the total
+  // once a manager approves it.
+  discountAmount: { type: Number }, // naira off the full price
+  discountReason: { type: String },
+  discountStatus: { type: String, enum: ["pending", "approved", "rejected"] },
+  discountRequestedBy: { type: String },
+  discountRequestedAt: { type: Date },
+  discountDecidedBy: { type: String }, // manager email
+  discountDecidedAt: { type: Date },
+  discountNote: { type: String }, // manager's note when approving/rejecting
+
   // "unpaid" when the system cancelled an online reservation that was not paid in time
   cancelReason: {
     type: String,

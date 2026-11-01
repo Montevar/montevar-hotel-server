@@ -26,6 +26,7 @@ const {
   checkAvailability,
   clearAllBookings,
   managerUpdateBooking,
+  decideDiscount,
   managerDeleteBooking,
 } = require("../controllers/bookingController");
 
@@ -47,6 +48,7 @@ router.delete('/clear-all', requireManager, clearAllBookings); // Danger zone: c
 
 // ✅ Upper management only (audited, reason required)
 router.put('/:id', requireManager, managerUpdateBooking); // Edit any booking
+router.patch('/:id/discount', requireManager, decideDiscount); // Approve or reject a front-desk discount
 router.delete('/:id', requireManager, managerDeleteBooking); // Delete any booking
 
 module.exports = router;

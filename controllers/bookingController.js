@@ -155,6 +155,7 @@ const bookingSnapshot = (b) => ({
   needsAttention: b.needsAttention || null,
   source: b.source === "dashboard" ? "Receptionist" : "Online",
   reference: b.reference || null,
+  discount: b.discountAmount ? `${naira(b.discountAmount)} (${b.discountStatus})` : null,
   bookedAt: bookedAt(b).toLocaleString("en-GB", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" }),
 });
 
@@ -162,6 +163,12 @@ const bookingSnapshot = (b) => ({
 const bookedAt = (b) => b.createdAt || b._id.getTimestamp();
 
 const auditLabel = (b) => `${b.fullName} · ${b.roomName}`;
+
+// Full price, and what the guest pays once an approved discount comes off
+const fullPrice = (b) => b.roomPrice * (b.nights || 0);
+const priceAfterDiscount = (b) =>
+  Math.max(0, fullPrice(b) - (b.discountStatus === "approved" ? b.discountAmount || 0 : 0));
+const naira = (n) => `₦${Number(n).toLocaleString("en-NG")}`;
 
 
 
@@ -422,6 +429,28 @@ const createManualBooking = async (req, res) => {
     const room = await Room.findOne({ name: String(roomName) });
     if (!room) return res.status(404).json({ message: "Room not found." });
 
+    // Optional front-desk discount: waits for a manager to approve it
+    const full = room.price * stay.nights;
+    let discount = null;
+    const { discountAmount, discountReason } = req.body;
+    if (discountAmount !== undefined && discountAmount !== null && discountAmount !== "" && Number(discountAmount) !== 0) {
+      const amount = Number(discountAmount);
+      if (!Number.isInteger(amount) || amount < 1 || amount > full) {
+        return res.status(400).json({ message: `Discount must be a whole naira amount between ₦1 and the full price (${naira(full)}).` });
+      }
+      const reason = typeof discountReason === "string" ? discountReason.trim() : "";
+      if (reason.length < 3 || reason.length > 200) {
+        return res.status(400).json({ message: "Please say why the discount was given (3–200 characters)." });
+      }
+      discount = {
+        discountAmount: amount,
+        discountReason: reason,
+        discountStatus: "pending",
+        discountRequestedBy: actorOf(req),
+        discountRequestedAt: new Date(),
+      };
+    }
+
     const available = await isRoomAvailable(room.name, stay.start, stay.end);
     if (!available) {
       return res.status(400).json({
@@ -430,6 +459,7 @@ const createManualBooking = async (req, res) => {
     }
 
     const newBooking = new Booking({
+      ...discount,
       fullName,
       phone,
       email,
@@ -450,6 +480,12 @@ const createManualBooking = async (req, res) => {
     await audit(req, actorOf(req), "booking.create", {
       bookingId: newBooking._id, name: auditLabel(newBooking), booking: bookingSnapshot(newBooking),
     });
+    if (discount) {
+      await audit(req, actorOf(req), "booking.discount_request", {
+        bookingId: newBooking._id, name: auditLabel(newBooking),
+        amount: discount.discountAmount, fullPrice: full, guestPays: full - discount.discountAmount, reason: discount.discountReason,
+      });
+    }
 
     res.status(201).json({ message: "Manual booking added", booking: newBooking });
   } catch (error) {
@@ -672,7 +708,7 @@ const managerUpdateBooking = async (req, res) => {
       booking.startDate = stay.start;
       booking.endDate = stay.end;
       booking.nights = stay.nights;
-      booking.totalAmount = booking.roomPrice * stay.nights;
+      booking.totalAmount = priceAfterDiscount(booking);
     }
 
     if (body.isPaid !== undefined) {
@@ -753,6 +789,46 @@ const managerDeleteBooking = async (req, res) => {
 
 
 
+// ✅ Manager approves or rejects a front-desk discount
+const decideDiscount = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Booking not found" });
+    const decision = req.body?.decision;
+    if (decision !== "approve" && decision !== "reject") {
+      return res.status(400).json({ message: "Decision must be approve or reject." });
+    }
+    const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 300) : "";
+    if (decision === "reject" && note.length < 3) {
+      return res.status(400).json({ message: "Please say why the discount is rejected (at least 3 characters)." });
+    }
+
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.discountStatus !== "pending") {
+      return res.status(409).json({ message: "This discount has already been decided." });
+    }
+
+    const totalBefore = booking.totalAmount;
+    booking.discountStatus = decision === "approve" ? "approved" : "rejected";
+    booking.discountDecidedBy = req.session.managerEmail;
+    booking.discountDecidedAt = new Date();
+    booking.discountNote = note || undefined;
+    booking.totalAmount = priceAfterDiscount(booking);
+    await booking.save();
+
+    await audit(req, req.session.managerEmail, decision === "approve" ? "booking.discount_approve" : "booking.discount_reject", {
+      bookingId: booking._id, name: auditLabel(booking), amount: booking.discountAmount,
+      reason: booking.discountReason, requestedBy: booking.discountRequestedBy, note: note || undefined,
+      before: { total: totalBefore }, after: { total: booking.totalAmount },
+    });
+
+    res.json({ ...booking.toObject(), bookedAt: bookedAt(booking), status: getBookingStatus(booking) });
+  } catch (error) {
+    console.error("❌ Discount decision error:", error.message);
+    res.status(500).json({ message: "Could not save the decision" });
+  }
+};
+
 // ✅ Cancel online reservations that were not paid by their deadline (runs on a timer, see server.js)
 const expireUnpaidReservations = async () => {
   try {
@@ -788,6 +864,7 @@ const expireUnpaidReservations = async () => {
 };
 
 module.exports = {
+  decideDiscount,
   expireUnpaidReservations,
   managerUpdateBooking,
   managerDeleteBooking,
