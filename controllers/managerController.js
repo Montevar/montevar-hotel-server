@@ -213,8 +213,9 @@ exports.logout = async (req, res) => {
   });
 };
 
-// GET /api/manager/audit  (signed-in managers)
+// GET /api/manager/audit[?type=bookings]  (signed-in managers)
 exports.getAuditLog = async (req, res) => {
-  const entries = await AuditLog.find().sort({ at: -1 }).limit(100).lean();
+  const filter = req.query.type === 'bookings' ? { action: /^booking\./ } : {};
+  const entries = await AuditLog.find(filter).sort({ at: -1 }).limit(200).lean();
   res.json(entries.map(({ _id, __v, ...e }) => e));
 };

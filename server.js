@@ -16,6 +16,7 @@ const cors = require('cors');
 const path = require('path');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
+const { limiterKey } = require('./utils/clientIp');
 
 // ✅ Connect to MongoDB
 connectDB();
@@ -77,6 +78,7 @@ app.use(session({
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  keyGenerator: limiterKey,
 }));
 
 // ✅ Ignore favicon requests
@@ -104,8 +106,24 @@ app.use((req, res) => {
   res.status(404).json({ message: 'API route not found' });
 });
 
+// ✅ Errors (CORS refusals, bad JSON, crashes): short JSON reply, never a stack trace
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err.message === 'Not allowed by CORS') return res.status(403).json({ message: 'Not allowed' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ message: 'Request too large' });
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ message: 'Invalid JSON' });
+  console.error('Unhandled error:', err.message);
+  res.status(500).json({ message: 'Server error' });
+});
+
 // ✅ Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Dev Server listening at http://localhost:${PORT}`);
 });
+
+// ✅ Cancel unpaid online reservations once their pay-by deadline passes (on start, then every 5 minutes)
+const { expireUnpaidReservations } = require('./controllers/bookingController');
+const SWEEP_MS = Number(process.env.RESERVATION_SWEEP_MS) || 5 * 60 * 1000;
+setTimeout(expireUnpaidReservations, 10 * 1000).unref();
+setInterval(expireUnpaidReservations, SWEEP_MS).unref();

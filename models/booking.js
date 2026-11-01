@@ -69,6 +69,11 @@ paymentMethod: {
     default: false,
   },
 
+  // "unpaid" when the system cancelled an online reservation that was not paid in time
+  cancelReason: {
+    type: String,
+  },
+
    reference: {
     type: String,
     index: true,
